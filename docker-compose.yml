@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: estimate-takeoff-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-estimate_takeoff}
+      POSTGRES_USER: ${POSTGRES_USER:-estimate_takeoff}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-estimate_takeoff}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: estimate-takeoff-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://estimate_takeoff:estimate_takeoff@postgres:5432/estimate_takeoff
+      UPLOADS_DIR: /app/uploads
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      PORT: ${PORT:-3000}
+    volumes:
+      - ./uploads:/app/uploads
+    ports:
+      - "3000:3000"
+
+volumes:
+  postgres_data:
+    name: estimate-takeoff-postgres-data

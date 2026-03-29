@@ -17,9 +17,11 @@ export function getDatabaseUrl(): string {
 export function getUploadsDir(): string {
   const configured = process.env.UPLOADS_DIR ?? "./uploads";
 
-  return path.isAbsolute(configured)
-    ? configured
-    : path.resolve(process.cwd(), configured);
+  if (path.isAbsolute(configured)) {
+    return configured;
+  }
+
+  return path.join(/* turbopackIgnore: true */ process.cwd(), configured);
 }
 
 export function getAppUrl(): string {

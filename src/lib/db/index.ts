@@ -1,6 +1,11 @@
 import "server-only";
 
-import { Pool, type PoolClient, type QueryResult } from "pg";
+import {
+  Pool,
+  type PoolClient,
+  type QueryResult,
+  type QueryResultRow,
+} from "pg";
 
 import { getDatabaseUrl } from "@/lib/config";
 
@@ -8,29 +13,27 @@ declare global {
   var __estimateTakeoffPool: Pool | undefined;
 }
 
-function createPool(): Pool {
-  return new Pool({
-    connectionString: getDatabaseUrl(),
-  });
+function getPool(): Pool {
+  if (!globalThis.__estimateTakeoffPool) {
+    globalThis.__estimateTakeoffPool = new Pool({
+      connectionString: getDatabaseUrl(),
+    });
+  }
+
+  return globalThis.__estimateTakeoffPool;
 }
 
-const pool = globalThis.__estimateTakeoffPool ?? createPool();
-
-if (process.env.NODE_ENV !== "production") {
-  globalThis.__estimateTakeoffPool = pool;
-}
-
-export async function query<T>(
+export async function query<T extends QueryResultRow>(
   sql: string,
   params: unknown[] = [],
 ): Promise<QueryResult<T>> {
-  return pool.query<T>(sql, params);
+  return getPool().query<T>(sql, params);
 }
 
 export async function withTransaction<T>(
   callback: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  const client = await pool.connect();
+  const client = await getPool().connect();
 
   try {
     await client.query("BEGIN");

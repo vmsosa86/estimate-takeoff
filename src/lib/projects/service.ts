@@ -358,6 +358,36 @@ export async function getViewerData(
   });
 }
 
+export async function getFileDownloadInfo(fileId: string): Promise<{
+  originalName: string;
+  storedPath: string;
+} | null> {
+  return withTransaction(async (client) => {
+    const result = await client.query<{
+      original_name: string;
+      stored_path: string;
+    }>(
+      `
+        SELECT original_name, stored_path
+        FROM project_files
+        WHERE id = $1
+      `,
+      [fileId],
+    );
+
+    const row = result.rows[0];
+
+    if (!row) {
+      return null;
+    }
+
+    return {
+      originalName: row.original_name,
+      storedPath: row.stored_path,
+    };
+  });
+}
+
 export async function savePageCalibration(input: {
   pageId: string;
   point1: Point;

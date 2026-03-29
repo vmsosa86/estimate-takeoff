@@ -5,6 +5,8 @@ import { NoticeBanner } from "@/components/projects/notice-banner";
 import { ProjectShell } from "@/components/projects/project-shell";
 import { listProjects } from "@/lib/projects/service";
 
+export const dynamic = "force-dynamic";
+
 type ProjectsPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };

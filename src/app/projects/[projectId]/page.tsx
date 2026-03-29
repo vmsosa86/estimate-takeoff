@@ -10,6 +10,8 @@ import { NoticeBanner } from "@/components/projects/notice-banner";
 import { ProjectShell } from "@/components/projects/project-shell";
 import { getProjectDetail } from "@/lib/projects/service";
 
+export const dynamic = "force-dynamic";
+
 type ProjectDetailPageProps = {
   params: Promise<{ projectId: string }>;
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
