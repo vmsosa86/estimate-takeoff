@@ -1,19 +1,32 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Circle, Layer, Line, Stage } from "react-konva";
+import { Circle, Layer, Line, Stage, Text } from "react-konva";
 
-import { formatSqFt } from "@/lib/math/measurement";
+import {
+  calculateMeasuredArea,
+  calculatePolygonPixelArea,
+  formatSqFt,
+  getPixelDistance,
+} from "@/lib/math/measurement";
 import type {
   AreaShape,
   PageCalibration,
   Point,
+  ShapeKind,
+  ShapeOperation,
   ViewerPageData,
 } from "@/lib/types";
 
-type ViewerTool = "select" | "calibrate" | "draw";
+type ViewerTool =
+  | "select"
+  | "move"
+  | "calibrate"
+  | "polygon"
+  | "rectangle"
+  | "deduct";
 
 type PdfViewerClientProps = {
   fileUrl: string;
@@ -37,10 +50,29 @@ type PdfJsModule = {
   getDocument: (src: string) => { promise: Promise<PdfDocumentProxy> };
 };
 
+type MeasurementGroup = {
+  name: string;
+  shapes: AreaShape[];
+  totalSqFt: number | null;
+};
+
+const DEFAULT_GROUP_NAME = "Ungrouped";
+const DEFAULT_COLORS = [
+  "#cf5c36",
+  "#2c6fbb",
+  "#2a9d8f",
+  "#8f5ed9",
+  "#c0392b",
+  "#6b8e23",
+];
+
 const TOOL_LABELS: Record<ViewerTool, string> = {
   select: "Select",
-  calibrate: "Calibrate",
-  draw: "Draw Area",
+  move: "Move",
+  calibrate: "Scale",
+  polygon: "Polygon",
+  rectangle: "Rectangle",
+  deduct: "Deduct",
 };
 
 function getCalibrationPoints(calibration: PageCalibration | null): Point[] {
@@ -56,6 +88,103 @@ function getCalibrationPoints(calibration: PageCalibration | null): Point[] {
 
 function pointsToFlatArray(points: Point[], scale: number): number[] {
   return points.flatMap((point) => [point.x * scale, point.y * scale]);
+}
+
+function normalizeGroupName(groupName: string | null | undefined): string | null {
+  const trimmed = groupName?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function buildRectanglePoints(start: Point, end: Point): Point[] {
+  return [
+    { x: start.x, y: start.y },
+    { x: end.x, y: start.y },
+    { x: end.x, y: end.y },
+    { x: start.x, y: end.y },
+  ];
+}
+
+function hexToRgba(colorHex: string, alpha: number): string {
+  const sanitized = colorHex.replace("#", "");
+
+  if (sanitized.length !== 6) {
+    return `rgba(44, 111, 187, ${alpha})`;
+  }
+
+  const red = Number.parseInt(sanitized.slice(0, 2), 16);
+  const green = Number.parseInt(sanitized.slice(2, 4), 16);
+  const blue = Number.parseInt(sanitized.slice(4, 6), 16);
+
+  return `rgba(${red}, ${green}, ${blue}, ${alpha})`;
+}
+
+function getSignedAreaSqFeet(shape: AreaShape): number | null {
+  if (shape.areaSqFeet === null) {
+    return null;
+  }
+
+  return shape.operation === "deduct" ? -shape.areaSqFeet : shape.areaSqFeet;
+}
+
+function formatLengthFromPoints(
+  point1: Point,
+  point2: Point,
+  calibration: PageCalibration | null,
+): string {
+  const pixelDistance = getPixelDistance(point1, point2);
+
+  if (!calibration) {
+    return `${pixelDistance.toFixed(0)} px`;
+  }
+
+  const inches = pixelDistance * calibration.inchesPerPixel;
+  const feet = inches / 12;
+
+  return `${feet.toFixed(2)} ft`;
+}
+
+function formatPreviewArea(
+  points: Point[],
+  calibration: PageCalibration | null,
+  operation: ShapeOperation,
+): string {
+  if (points.length < 3) {
+    return "Area preview unavailable";
+  }
+
+  const measured = calculateMeasuredArea(
+    calculatePolygonPixelArea(points),
+    calibration?.inchesPerPixel ?? null,
+  );
+
+  if (measured.areaSqFeet === null) {
+    return "Area preview unavailable until page is calibrated";
+  }
+
+  const prefix = operation === "deduct" ? "-" : "";
+
+  return `${prefix}${formatSqFt(measured.areaSqFeet)}`;
+}
+
+function getNextShapeName(
+  kind: ShapeKind,
+  operation: ShapeOperation,
+  shapes: AreaShape[],
+): string {
+  const prefix =
+    operation === "deduct"
+      ? kind === "rectangle"
+        ? "Deduction Rectangle"
+        : "Deduction Polygon"
+      : kind === "rectangle"
+        ? "Rectangle"
+        : "Polygon";
+
+  const count = shapes.filter(
+    (shape) => shape.kind === kind && shape.operation === operation,
+  ).length;
+
+  return `${prefix} ${count + 1}`;
 }
 
 async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
@@ -75,6 +204,91 @@ async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<T
   return payload as T;
 }
 
+function PdfPageThumbnail({
+  documentProxy,
+  heightPx,
+  isActive,
+  onClick,
+  pageNumber,
+  widthPx,
+}: {
+  documentProxy: PdfDocumentProxy | null;
+  heightPx: number;
+  isActive: boolean;
+  onClick: () => void;
+  pageNumber: number;
+  widthPx: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!documentProxy || !canvasRef.current) {
+      return undefined;
+    }
+
+    const loadedDocument = documentProxy;
+    let isCancelled = false;
+    let renderTask: { promise: Promise<void>; cancel?: () => void } | null = null;
+
+    async function renderThumbnail() {
+      const page = await loadedDocument.getPage(pageNumber);
+      const maxWidth = 144;
+      const baseScale = maxWidth / widthPx;
+      const viewport = page.getViewport({ scale: baseScale });
+      const canvas = canvasRef.current;
+      const context = canvas?.getContext("2d");
+
+      if (!canvas || !context || isCancelled) {
+        return;
+      }
+
+      const devicePixelRatio = window.devicePixelRatio || 1;
+      canvas.width = viewport.width * devicePixelRatio;
+      canvas.height = viewport.height * devicePixelRatio;
+      canvas.style.width = `${viewport.width}px`;
+      canvas.style.height = `${viewport.height}px`;
+      context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+
+      renderTask = page.render({
+        canvasContext: context,
+        viewport,
+      });
+
+      await renderTask.promise;
+    }
+
+    renderThumbnail().catch(() => undefined);
+
+    return () => {
+      isCancelled = true;
+      renderTask?.cancel?.();
+    };
+  }, [documentProxy, pageNumber, widthPx]);
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full rounded-2xl border p-2 text-left transition ${
+        isActive
+          ? "border-[var(--color-accent)] bg-[rgba(155,93,51,0.08)]"
+          : "border-[var(--color-border)] bg-white"
+      }`}
+    >
+      <canvas
+        ref={canvasRef}
+        width={widthPx}
+        height={heightPx}
+        className="block w-full rounded-lg bg-white shadow-sm"
+      />
+      <div className="mt-2 flex items-center justify-between text-xs font-medium text-[var(--color-muted)]">
+        <span>Page {pageNumber}</span>
+        <span>{Math.round(widthPx)} × {Math.round(heightPx)}</span>
+      </div>
+    </button>
+  );
+}
+
 export function PdfViewerClient({
   fileUrl,
   projectId,
@@ -91,13 +305,21 @@ export function PdfViewerClient({
   const [zoom, setZoom] = useState(1);
   const [fitWidth, setFitWidth] = useState(true);
   const [containerWidth, setContainerWidth] = useState<number>(0);
+  const [lineWidth, setLineWidth] = useState(1);
   const [shapes, setShapes] = useState<AreaShape[]>(viewerData.shapes);
   const [calibration, setCalibration] = useState<PageCalibration | null>(
     viewerData.calibration,
   );
   const [draftCalibration, setDraftCalibration] = useState<Point[]>([]);
   const [draftPolygon, setDraftPolygon] = useState<Point[]>([]);
+  const [draftRectangleAnchor, setDraftRectangleAnchor] = useState<Point | null>(null);
+  const [hoverPoint, setHoverPoint] = useState<Point | null>(null);
+  const [deductKind, setDeductKind] = useState<ShapeKind>("rectangle");
   const [shapeName, setShapeName] = useState("");
+  const [shapeGroupName, setShapeGroupName] = useState(DEFAULT_GROUP_NAME);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [shapeColorHex, setShapeColorHex] = useState(DEFAULT_COLORS[0]);
+  const [shapeOperation, setShapeOperation] = useState<ShapeOperation>("add");
   const [calibrationFeet, setCalibrationFeet] = useState("0");
   const [calibrationInches, setCalibrationInches] = useState("0");
   const [error, setError] = useState<string | null>(null);
@@ -107,27 +329,85 @@ export function PdfViewerClient({
   const currentPageIndex = viewerData.pages.findIndex(
     (page) => page.id === currentPage.id,
   );
-  const scale = fitWidth && containerWidth
-    ? containerWidth / currentPage.widthPx
-    : zoom;
-  const totalSqFt = shapes.reduce(
-    (sum, shape) => sum + (shape.areaSqFeet ?? 0),
-    0,
-  );
+  const scale =
+    fitWidth && containerWidth ? containerWidth / currentPage.widthPx : zoom;
   const selectedShape =
     shapes.find((shape) => shape.id === selectedShapeId) ?? null;
   const calibrationPoints =
     draftCalibration.length > 0 ? draftCalibration : getCalibrationPoints(calibration);
+  const drawingKind: ShapeKind | null =
+    tool === "rectangle"
+      ? "rectangle"
+      : tool === "polygon"
+        ? "polygon"
+        : tool === "deduct"
+          ? deductKind
+          : null;
+  const drawingOperation: ShapeOperation =
+    tool === "deduct" ? "deduct" : "add";
+  const previewRectanglePoints =
+    drawingKind === "rectangle" && draftRectangleAnchor && hoverPoint
+      ? buildRectanglePoints(draftRectangleAnchor, hoverPoint)
+      : [];
+  const draftPoints =
+    draftPolygon.length > 0 ? draftPolygon : previewRectanglePoints;
+  const groupOptions = useMemo(() => {
+    const groups = new Set<string>([DEFAULT_GROUP_NAME]);
+
+    for (const shape of shapes) {
+      groups.add(shape.groupName ?? DEFAULT_GROUP_NAME);
+    }
+
+    return Array.from(groups);
+  }, [shapes]);
+  const measurementGroups = useMemo<MeasurementGroup[]>(() => {
+    const byGroup = new Map<string, AreaShape[]>();
+
+    for (const shape of shapes) {
+      const groupName = shape.groupName ?? DEFAULT_GROUP_NAME;
+      const current = byGroup.get(groupName) ?? [];
+      current.push(shape);
+      byGroup.set(groupName, current);
+    }
+
+    return Array.from(byGroup.entries()).map(([name, groupShapes]) => ({
+      name,
+      shapes: groupShapes,
+      totalSqFt: calibration
+        ? groupShapes.reduce(
+            (sum, shape) => sum + (getSignedAreaSqFeet(shape) ?? 0),
+            0,
+          )
+        : null,
+    }));
+  }, [calibration, shapes]);
+  const totalSqFt = calibration
+    ? shapes.reduce((sum, shape) => sum + (getSignedAreaSqFeet(shape) ?? 0), 0)
+    : null;
 
   useEffect(() => {
     setShapes(viewerData.shapes);
     setCalibration(viewerData.calibration);
     setDraftCalibration([]);
     setDraftPolygon([]);
+    setDraftRectangleAnchor(null);
+    setHoverPoint(null);
     setSelectedShapeId(null);
     setShapeName("");
+    setShapeOperation("add");
     setError(null);
   }, [viewerData]);
+
+  useEffect(() => {
+    if (!selectedShape) {
+      return;
+    }
+
+    setShapeName(selectedShape.name);
+    setShapeGroupName(selectedShape.groupName ?? DEFAULT_GROUP_NAME);
+    setShapeColorHex(selectedShape.colorHex);
+    setShapeOperation(selectedShape.operation);
+  }, [selectedShape]);
 
   useEffect(() => {
     const element = containerRef.current;
@@ -138,7 +418,7 @@ export function PdfViewerClient({
 
     const resizeObserver = new ResizeObserver((entries) => {
       const nextWidth = entries[0]?.contentRect.width ?? 0;
-      setContainerWidth(Math.max(nextWidth - 32, 240));
+      setContainerWidth(Math.max(nextWidth - 40, 320));
     });
 
     resizeObserver.observe(element);
@@ -164,7 +444,10 @@ export function PdfViewerClient({
         return;
       }
 
-      setDocumentProxy(loadedDocument);
+      setDocumentProxy((current) => {
+        void current?.destroy();
+        return loadedDocument;
+      });
     }
 
     loadPdf().catch(() => {
@@ -220,6 +503,33 @@ export function PdfViewerClient({
     };
   }, [currentPage.pageNumber, documentProxy, scale]);
 
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (
+          (tool === "polygon" || (tool === "deduct" && deductKind === "polygon")) &&
+          draftPolygon.length > 0
+        ) {
+          event.preventDefault();
+          setDraftPolygon((current) => current.slice(0, -1));
+        }
+
+        if (
+          (tool === "rectangle" || (tool === "deduct" && deductKind === "rectangle")) &&
+          draftRectangleAnchor
+        ) {
+          event.preventDefault();
+          setDraftRectangleAnchor(null);
+          setHoverPoint(null);
+          setDraftPolygon([]);
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [deductKind, draftPolygon.length, draftRectangleAnchor, tool]);
+
   function setPage(pageNumber: number) {
     const params = new URLSearchParams(searchParams.toString());
     params.set("page", String(pageNumber));
@@ -229,12 +539,17 @@ export function PdfViewerClient({
     });
   }
 
-  function resetDraftState(nextTool: ViewerTool) {
-    setTool(nextTool);
+  function clearDraftState() {
     setDraftCalibration([]);
     setDraftPolygon([]);
-    setShapeName("");
+    setDraftRectangleAnchor(null);
+    setHoverPoint(null);
     setError(null);
+  }
+
+  function setToolMode(nextTool: ViewerTool) {
+    clearDraftState();
+    setTool(nextTool);
   }
 
   function getScaledPointer(point: Point): Point {
@@ -244,20 +559,44 @@ export function PdfViewerClient({
     };
   }
 
+  function selectShape(shape: AreaShape) {
+    setSelectedShapeId(shape.id);
+    setShapeName(shape.name);
+    setShapeGroupName(shape.groupName ?? DEFAULT_GROUP_NAME);
+    setShapeColorHex(shape.colorHex);
+    setShapeOperation(shape.operation);
+    setTool("select");
+  }
+
   function handleStagePointer(point: Point) {
+    const scaledPoint = getScaledPointer(point);
+
     if (tool === "calibrate") {
       setDraftCalibration((current) => {
         if (current.length === 2) {
-          return [getScaledPointer(point)];
+          return [scaledPoint];
         }
 
-        return [...current, getScaledPointer(point)];
+        return [...current, scaledPoint];
       });
       return;
     }
 
-    if (tool === "draw") {
-      setDraftPolygon((current) => [...current, getScaledPointer(point)]);
+    if (drawingKind === "polygon") {
+      setDraftPolygon((current) => [...current, scaledPoint]);
+      return;
+    }
+
+    if (drawingKind === "rectangle") {
+      if (!draftRectangleAnchor) {
+        setDraftRectangleAnchor(scaledPoint);
+        setHoverPoint(scaledPoint);
+        return;
+      }
+
+      setDraftPolygon(buildRectanglePoints(draftRectangleAnchor, scaledPoint));
+      setDraftRectangleAnchor(null);
+      setHoverPoint(scaledPoint);
       return;
     }
 
@@ -298,16 +637,20 @@ export function PdfViewerClient({
     }
   }
 
-  async function savePolygon() {
-    if (draftPolygon.length < 3) {
-      setError("Add at least three points to create an area.");
+  async function saveDraftMeasurement() {
+    if (!drawingKind || draftPoints.length < 3) {
+      setError("Add enough points to finish the measurement.");
       return;
     }
 
-    if (!shapeName.trim()) {
-      setError("Name the area before saving it.");
-      return;
-    }
+    const nextGroupName = newGroupName.trim()
+      ? newGroupName
+      : shapeGroupName === DEFAULT_GROUP_NAME
+        ? null
+        : shapeGroupName;
+    const normalizedGroupName = normalizeGroupName(
+      nextGroupName,
+    );
 
     try {
       const result = await requestJson<{ shape: AreaShape }>(
@@ -315,29 +658,38 @@ export function PdfViewerClient({
         {
           method: "POST",
           body: JSON.stringify({
-            name: shapeName.trim(),
-            points: draftPolygon,
+            name:
+              shapeName.trim() ||
+              getNextShapeName(drawingKind, drawingOperation, shapes),
+            kind: drawingKind,
+            operation: drawingOperation,
+            colorHex: shapeColorHex,
+            groupName: normalizedGroupName,
+            points: draftPoints,
           }),
         },
       );
 
       setShapes((current) => [...current, result.shape]);
-      setDraftPolygon([]);
+      selectShape(result.shape);
+      clearDraftState();
       setShapeName("");
-      setSelectedShapeId(result.shape.id);
       setTool("select");
-      setError(null);
     } catch (requestError) {
       setError(
         requestError instanceof Error
           ? requestError.message
-          : "Area could not be saved.",
+          : "Measurement could not be saved.",
       );
     }
   }
 
   async function updateSelectedShape(updates: {
     name?: string;
+    kind?: ShapeKind;
+    operation?: ShapeOperation;
+    colorHex?: string;
+    groupName?: string | null;
     points?: Point[];
   }) {
     if (!selectedShape) {
@@ -364,14 +716,14 @@ export function PdfViewerClient({
       setError(
         requestError instanceof Error
           ? requestError.message
-          : "Area could not be updated.",
+          : "Measurement could not be updated.",
       );
     }
   }
 
   async function deleteSelectedShape() {
     if (!selectedShape) {
-      setError("Select an area to delete.");
+      setError("Select a measurement to delete.");
       return;
     }
 
@@ -386,22 +738,111 @@ export function PdfViewerClient({
       setSelectedShapeId(null);
       setError(null);
     } catch {
-      setError("Area could not be deleted.");
+      setError("Measurement could not be deleted.");
     }
   }
 
   const pageHref = `/projects/${projectId}`;
+  const calibrationStatus = calibration ? "Custom calibrated" : "Not calibrated";
+  const draftInstruction =
+    tool === "polygon"
+      ? "Polygon area: click points, double-click to finish, Delete removes last point."
+      : tool === "rectangle"
+        ? "Rectangle area: click once to set the corner, move, then click again to finish."
+        : tool === "deduct"
+          ? `Deduction ${deductKind}: ${
+              deductKind === "polygon"
+                ? "click points, double-click to finish, Delete removes last point."
+                : "click once to set the corner, move, then click again to finish."
+            }`
+          : tool === "calibrate"
+            ? "Pick two points on the page, then save the calibration."
+            : tool === "move"
+              ? "Move mode: drag a measurement or drag its points to refine it."
+              : "Select a saved measurement to review or edit it.";
+  const helperLength =
+    drawingKind === "polygon" && draftPolygon.length > 0 && hoverPoint
+      ? formatLengthFromPoints(draftPolygon[draftPolygon.length - 1], hoverPoint, calibration)
+      : previewRectanglePoints.length === 4
+        ? `${formatLengthFromPoints(previewRectanglePoints[0], previewRectanglePoints[1], calibration)} × ${formatLengthFromPoints(previewRectanglePoints[1], previewRectanglePoints[2], calibration)}`
+        : null;
+  const helperArea = draftPoints.length >= 3
+    ? formatPreviewArea(draftPoints, calibration, drawingOperation)
+    : null;
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+    <div className="grid gap-6 xl:grid-cols-[220px_minmax(0,1fr)_360px]">
+      <aside className="space-y-4">
+        <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-4 shadow-sm">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--color-accent)]">
+              Pages
+            </p>
+            <span className="text-xs text-[var(--color-muted)]">
+              {viewerData.pages.length} total
+            </span>
+          </div>
+          <div className="mt-4 space-y-3">
+            {viewerData.pages.map((page) => (
+              <PdfPageThumbnail
+                key={page.id}
+                documentProxy={documentProxy}
+                widthPx={page.widthPx}
+                heightPx={page.heightPx}
+                pageNumber={page.pageNumber}
+                isActive={page.id === currentPage.id}
+                onClick={() => setPage(page.pageNumber)}
+              />
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-4 shadow-sm">
+          <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--color-accent)]">
+            Page Settings
+          </p>
+          <dl className="mt-4 space-y-3 text-sm">
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-[var(--color-muted)]">Line Width</dt>
+              <dd className="flex items-center gap-3">
+                <input
+                  type="range"
+                  min="1"
+                  max="4"
+                  step="0.5"
+                  value={lineWidth}
+                  onChange={(event) => setLineWidth(Number(event.target.value))}
+                />
+                <span className="w-10 text-right">{lineWidth.toFixed(1)}</span>
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-[var(--color-muted)]">Page Scale</dt>
+              <dd>{calibrationStatus}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-[var(--color-muted)]">Measurement</dt>
+              <dd>Imperial</dd>
+            </div>
+          </dl>
+          <button
+            type="button"
+            onClick={() => setToolMode("calibrate")}
+            className="mt-4 w-full rounded-full border border-[var(--color-border)] bg-white px-4 py-2 text-sm font-medium"
+          >
+            Find Scale
+          </button>
+        </section>
+      </aside>
+
       <section className="min-w-0 rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-4 shadow-sm">
-        <div className="flex flex-col gap-4 border-b border-[var(--color-border)] px-2 pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="space-y-4 border-b border-[var(--color-border)] px-2 pb-4">
           <div className="flex flex-wrap items-center gap-2">
             {(Object.keys(TOOL_LABELS) as ViewerTool[]).map((toolName) => (
               <button
                 key={toolName}
                 type="button"
-                onClick={() => resetDraftState(toolName)}
+                onClick={() => setToolMode(toolName)}
                 className={`rounded-full px-4 py-2 text-sm font-medium transition ${
                   tool === toolName
                     ? "bg-[var(--color-accent)] text-white"
@@ -420,6 +861,59 @@ export function PdfViewerClient({
             </button>
           </div>
 
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-[var(--color-muted)]">Group</span>
+              <select
+                value={shapeGroupName}
+                onChange={(event) => setShapeGroupName(event.target.value)}
+                className="rounded-full border border-[var(--color-border)] bg-white px-3 py-2"
+              >
+                {groupOptions.map((groupName) => (
+                  <option key={groupName} value={groupName}>
+                    {groupName}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-[var(--color-muted)]">New Group</span>
+              <input
+                value={newGroupName}
+                onChange={(event) => setNewGroupName(event.target.value)}
+                placeholder="Warm"
+                className="rounded-full border border-[var(--color-border)] bg-white px-3 py-2"
+              />
+            </label>
+
+            <label className="flex items-center gap-2 text-sm">
+              <span className="text-[var(--color-muted)]">Color</span>
+              <input
+                type="color"
+                value={shapeColorHex}
+                onChange={(event) => setShapeColorHex(event.target.value)}
+                className="h-10 w-12 rounded-full border border-[var(--color-border)] bg-white p-1"
+              />
+            </label>
+
+            {tool === "deduct" ? (
+              <label className="flex items-center gap-2 text-sm">
+                <span className="text-[var(--color-muted)]">Deduction Type</span>
+                <select
+                  value={deductKind}
+                  onChange={(event) =>
+                    setDeductKind(event.target.value as ShapeKind)
+                  }
+                  className="rounded-full border border-[var(--color-border)] bg-white px-3 py-2"
+                >
+                  <option value="rectangle">Rectangle</option>
+                  <option value="polygon">Polygon</option>
+                </select>
+              </label>
+            ) : null}
+          </div>
+
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <button
               type="button"
@@ -434,9 +928,7 @@ export function PdfViewerClient({
             </span>
             <button
               type="button"
-              disabled={
-                currentPageIndex >= viewerData.pages.length - 1 || isPending
-              }
+              disabled={currentPageIndex >= viewerData.pages.length - 1 || isPending}
               onClick={() => setPage(viewerData.pages[currentPageIndex + 1].pageNumber)}
               className="rounded-full border border-[var(--color-border)] bg-white px-4 py-2 disabled:opacity-50"
             >
@@ -472,15 +964,27 @@ export function PdfViewerClient({
           </div>
         </div>
 
-        <div ref={containerRef} className="mt-4 h-[72vh] overflow-auto rounded-2xl bg-[#d8d2c6] p-4">
+        <div ref={containerRef} className="mt-4 h-[74vh] overflow-auto rounded-2xl bg-[#d8d2c6] p-4">
           <div className="relative inline-block">
             <canvas ref={canvasRef} className="block rounded-xl bg-white shadow-lg" />
             <Stage
               width={currentPage.widthPx * scale}
               height={currentPage.heightPx * scale}
               className="!absolute left-0 top-0"
+              onMouseMove={(event) => {
+                const pointerPosition = event.target.getStage()?.getPointerPosition();
+
+                if (!pointerPosition) {
+                  return;
+                }
+
+                setHoverPoint(getScaledPointer(pointerPosition));
+              }}
               onMouseDown={(event) => {
-                if (tool === "select" && event.target !== event.target.getStage()) {
+                if (
+                  (tool === "select" || tool === "move") &&
+                  event.target !== event.target.getStage()
+                ) {
                   return;
                 }
 
@@ -493,27 +997,48 @@ export function PdfViewerClient({
                 handleStagePointer(pointerPosition);
               }}
               onDblClick={() => {
-                if (tool === "draw" && draftPolygon.length >= 3) {
-                  void savePolygon();
+                if (
+                  (tool === "polygon" || (tool === "deduct" && deductKind === "polygon")) &&
+                  draftPolygon.length >= 3
+                ) {
+                  void saveDraftMeasurement();
                 }
               }}
             >
               <Layer>
                 {shapes.map((shape) => {
                   const isSelected = shape.id === selectedShapeId;
+                  const signedStroke =
+                    shape.operation === "deduct"
+                      ? shape.colorHex
+                      : isSelected
+                        ? "#9b5d33"
+                        : shape.colorHex;
 
                   return (
                     <Line
                       key={shape.id}
                       points={pointsToFlatArray(shape.points, scale)}
                       closed
-                      fill={isSelected ? "rgba(155,93,51,0.22)" : "rgba(44,111,187,0.18)"}
-                      stroke={isSelected ? "#9b5d33" : "#2c6fbb"}
-                      strokeWidth={isSelected ? 3 : 2}
-                      onClick={() => {
-                        setSelectedShapeId(shape.id);
-                        setTool("select");
-                        setShapeName(shape.name);
+                      fill={hexToRgba(shape.colorHex, shape.operation === "deduct" ? 0.08 : 0.2)}
+                      dash={shape.operation === "deduct" ? [10, 6] : undefined}
+                      stroke={signedStroke}
+                      strokeWidth={isSelected ? 2.5 * lineWidth : 1.6 * lineWidth}
+                      draggable={tool === "move" && isSelected}
+                      onClick={() => selectShape(shape)}
+                      onDragEnd={(event) => {
+                        if (tool !== "move") {
+                          return;
+                        }
+
+                        const offset = event.target.position();
+                        const nextPoints = shape.points.map((point) => ({
+                          x: point.x + offset.x / scale,
+                          y: point.y + offset.y / scale,
+                        }));
+
+                        event.target.position({ x: 0, y: 0 });
+                        void updateSelectedShape({ points: nextPoints });
                       }}
                     />
                   );
@@ -521,11 +1046,29 @@ export function PdfViewerClient({
 
                 {draftPolygon.length > 0 ? (
                   <Line
-                    points={pointsToFlatArray(draftPolygon, scale)}
-                    stroke="#9b5d33"
-                    strokeWidth={2}
-                    closed={draftPolygon.length >= 3}
-                    fill="rgba(155,93,51,0.15)"
+                    points={pointsToFlatArray(
+                      hoverPoint &&
+                        (tool === "polygon" || (tool === "deduct" && deductKind === "polygon"))
+                        ? [...draftPolygon, hoverPoint]
+                        : draftPolygon,
+                      scale,
+                    )}
+                    stroke={shapeColorHex}
+                    strokeWidth={2 * lineWidth}
+                    closed={draftPolygon.length >= 3 && !hoverPoint}
+                    dash={drawingOperation === "deduct" ? [10, 6] : undefined}
+                    fill={hexToRgba(shapeColorHex, drawingOperation === "deduct" ? 0.08 : 0.15)}
+                  />
+                ) : null}
+
+                {previewRectanglePoints.length === 4 ? (
+                  <Line
+                    points={pointsToFlatArray(previewRectanglePoints, scale)}
+                    closed
+                    stroke={shapeColorHex}
+                    strokeWidth={2 * lineWidth}
+                    dash={drawingOperation === "deduct" ? [10, 6] : undefined}
+                    fill={hexToRgba(shapeColorHex, drawingOperation === "deduct" ? 0.08 : 0.15)}
                   />
                 ) : null}
 
@@ -533,7 +1076,7 @@ export function PdfViewerClient({
                   <Line
                     points={pointsToFlatArray(calibrationPoints, scale)}
                     stroke="#c44900"
-                    strokeWidth={3}
+                    strokeWidth={2.5 * lineWidth}
                     dash={[10, 6]}
                   />
                 ) : null}
@@ -543,12 +1086,16 @@ export function PdfViewerClient({
                     key={`${selectedShape.id}-${index}`}
                     x={point.x * scale}
                     y={point.y * scale}
-                    radius={7}
+                    radius={6 * lineWidth}
                     fill="#fff"
                     stroke="#9b5d33"
                     strokeWidth={2}
-                    draggable
+                    draggable={tool === "move"}
                     onDragMove={(event) => {
+                      if (tool !== "move") {
+                        return;
+                      }
+
                       const nextPosition = event.target.position();
                       setShapes((current) =>
                         current.map((shape) =>
@@ -569,6 +1116,10 @@ export function PdfViewerClient({
                       );
                     }}
                     onDragEnd={(event) => {
+                      if (tool !== "move") {
+                        return;
+                      }
+
                       const nextPosition = event.target.position();
                       const nextPoints = selectedShape.points.map(
                         (shapePoint, shapeIndex) =>
@@ -589,7 +1140,7 @@ export function PdfViewerClient({
                     key={`calibration-${index}`}
                     x={point.x * scale}
                     y={point.y * scale}
-                    radius={6}
+                    radius={5 * lineWidth}
                     fill="#c44900"
                   />
                 ))}
@@ -599,12 +1150,29 @@ export function PdfViewerClient({
                     key={`draft-${index}`}
                     x={point.x * scale}
                     y={point.y * scale}
-                    radius={5}
-                    fill="#9b5d33"
+                    radius={4.5 * lineWidth}
+                    fill={shapeColorHex}
                   />
                 ))}
+
+                {helperLength && hoverPoint ? (
+                  <Text
+                    x={hoverPoint.x * scale + 12}
+                    y={hoverPoint.y * scale + 12}
+                    text={helperLength}
+                    fontSize={14}
+                    padding={8}
+                    fill="#1f2937"
+                  />
+                ) : null}
               </Layer>
             </Stage>
+
+            <div className="pointer-events-none absolute bottom-4 left-4 max-w-sm rounded-2xl bg-[rgba(31,41,55,0.88)] px-4 py-3 text-sm text-white shadow-lg">
+              <p className="font-medium">{draftInstruction}</p>
+              {helperLength ? <p className="mt-1 text-white/80">Live size: {helperLength}</p> : null}
+              {helperArea ? <p className="mt-1 text-white/80">Live area: {helperArea}</p> : null}
+            </div>
           </div>
         </div>
       </section>
@@ -643,13 +1211,13 @@ export function PdfViewerClient({
             <div className="flex justify-between gap-4">
               <dt>Calibration</dt>
               <dd className="text-right text-[var(--color-foreground)]">
-                {calibration ? "Calibrated" : "Not calibrated"}
+                {calibrationStatus}
               </dd>
             </div>
             <div className="flex justify-between gap-4">
-              <dt>Total area</dt>
+              <dt>Net total</dt>
               <dd className="text-right text-[var(--color-foreground)]">
-                {calibration ? formatSqFt(totalSqFt) : "Unavailable"}
+                {totalSqFt === null ? "Unavailable" : formatSqFt(totalSqFt)}
               </dd>
             </div>
           </dl>
@@ -695,7 +1263,7 @@ export function PdfViewerClient({
           <div className="mt-4 flex flex-wrap gap-3">
             <button
               type="button"
-              onClick={() => resetDraftState("calibrate")}
+              onClick={() => setToolMode("calibrate")}
               className="rounded-full border border-[var(--color-border)] bg-white px-4 py-2 text-sm font-medium"
             >
               Start calibration
@@ -713,40 +1281,51 @@ export function PdfViewerClient({
         <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-5 shadow-sm">
           <div className="space-y-2">
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--color-accent)]">
-              Areas
+              Measurements
             </p>
             <p className="text-sm text-[var(--color-muted)]">
-              Draw polygon areas on the current page. Double-click the page to finish a polygon.
+              Grouped takeoff results with net totals and deduction tracking.
             </p>
           </div>
 
-          {tool === "draw" ? (
+          {drawingKind ? (
             <div className="mt-4 space-y-3 rounded-2xl border border-[var(--color-border)] bg-white p-4">
               <label className="space-y-2">
                 <span className="text-sm font-medium text-[var(--color-muted)]">
-                  Area name
+                  Draft name
                 </span>
                 <input
                   value={shapeName}
                   onChange={(event) => setShapeName(event.target.value)}
-                  placeholder="Living Room"
+                  placeholder={getNextShapeName(drawingKind, drawingOperation, shapes)}
                   className="w-full rounded-2xl border border-[var(--color-border)] px-4 py-3"
                 />
               </label>
-              <p className="text-sm text-[var(--color-muted)]">
-                {draftPolygon.length} point{draftPolygon.length === 1 ? "" : "s"} added
-              </p>
+              <div className="flex items-center justify-between text-sm text-[var(--color-muted)]">
+                <span>Draft type</span>
+                <span className="font-semibold text-[var(--color-foreground)]">
+                  {drawingOperation === "deduct" ? "Deduction" : "Area"} / {drawingKind}
+                </span>
+              </div>
+              {helperArea ? (
+                <div className="flex items-center justify-between text-sm text-[var(--color-muted)]">
+                  <span>Live result</span>
+                  <span className="font-semibold text-[var(--color-foreground)]">
+                    {helperArea}
+                  </span>
+                </div>
+              ) : null}
               <div className="flex flex-wrap gap-3">
                 <button
                   type="button"
-                  onClick={() => void savePolygon()}
+                  onClick={() => void saveDraftMeasurement()}
                   className="rounded-full bg-[var(--color-accent)] px-4 py-2 text-sm font-semibold text-white"
                 >
-                  Save area
+                  Save measurement
                 </button>
                 <button
                   type="button"
-                  onClick={() => setDraftPolygon([])}
+                  onClick={clearDraftState}
                   className="rounded-full border border-[var(--color-border)] bg-white px-4 py-2 text-sm font-medium"
                 >
                   Clear draft
@@ -759,69 +1338,138 @@ export function PdfViewerClient({
             <div className="mt-4 space-y-3 rounded-2xl border border-[var(--color-border)] bg-white p-4">
               <label className="space-y-2">
                 <span className="text-sm font-medium text-[var(--color-muted)]">
-                  Selected area
+                  Selected measurement
                 </span>
                 <input
-                  value={shapeName || selectedShape.name}
+                  value={shapeName}
                   onChange={(event) => setShapeName(event.target.value)}
                   className="w-full rounded-2xl border border-[var(--color-border)] px-4 py-3"
                 />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-[var(--color-muted)]">
+                    Group
+                  </span>
+                  <input
+                    value={shapeGroupName}
+                    onChange={(event) => setShapeGroupName(event.target.value)}
+                    className="w-full rounded-2xl border border-[var(--color-border)] px-4 py-3"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-sm font-medium text-[var(--color-muted)]">
+                    Color
+                  </span>
+                  <input
+                    type="color"
+                    value={shapeColorHex}
+                    onChange={(event) => setShapeColorHex(event.target.value)}
+                    className="h-12 w-full rounded-2xl border border-[var(--color-border)] p-2"
+                  />
+                </label>
+              </div>
+              <label className="space-y-2">
+                <span className="text-sm font-medium text-[var(--color-muted)]">
+                  Operation
+                </span>
+                <select
+                  value={shapeOperation}
+                  onChange={(event) =>
+                    setShapeOperation(event.target.value as ShapeOperation)
+                  }
+                  className="w-full rounded-2xl border border-[var(--color-border)] px-4 py-3"
+                >
+                  <option value="add">Add</option>
+                  <option value="deduct">Deduct</option>
+                </select>
               </label>
               <div className="flex items-center justify-between text-sm text-[var(--color-muted)]">
                 <span>Measured area</span>
                 <span className="font-semibold text-[var(--color-foreground)]">
                   {selectedShape.areaSqFeet === null
                     ? "Unavailable"
-                    : formatSqFt(selectedShape.areaSqFeet)}
+                    : formatSqFt(Math.abs(selectedShape.areaSqFeet))}
                 </span>
               </div>
               <button
                 type="button"
                 onClick={() =>
                   void updateSelectedShape({
-                    name: (shapeName || selectedShape.name).trim(),
+                    name: shapeName.trim() || selectedShape.name,
+                    groupName:
+                      shapeGroupName === DEFAULT_GROUP_NAME
+                        ? null
+                        : normalizeGroupName(shapeGroupName),
+                    colorHex: shapeColorHex,
+                    operation: shapeOperation,
                   })
                 }
                 className="rounded-full border border-[var(--color-border)] bg-white px-4 py-2 text-sm font-medium"
               >
-                Rename area
+                Save changes
               </button>
             </div>
           ) : null}
 
-          <div className="mt-4 space-y-3">
-            {shapes.length === 0 ? (
+          <div className="mt-4 space-y-4">
+            {measurementGroups.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-[var(--color-border)] px-4 py-8 text-center text-sm text-[var(--color-muted)]">
-                No saved areas on this page.
+                No measurements on this page yet.
               </div>
             ) : (
-              shapes.map((shape) => (
-                <button
-                  key={shape.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedShapeId(shape.id);
-                    setShapeName(shape.name);
-                    setTool("select");
-                  }}
-                  className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${
-                    shape.id === selectedShapeId
-                      ? "border-[var(--color-accent)] bg-[rgba(155,93,51,0.08)]"
-                      : "border-[var(--color-border)] bg-white"
-                  }`}
+              measurementGroups.map((group) => (
+                <div
+                  key={group.name}
+                  className="rounded-2xl border border-[var(--color-border)] bg-white p-4"
                 >
-                  <span>
-                    <span className="block font-medium">{shape.name}</span>
-                    <span className="text-sm text-[var(--color-muted)]">
-                      {shape.points.length} points
-                    </span>
-                  </span>
-                  <span className="text-sm font-semibold text-[var(--color-foreground)]">
-                    {shape.areaSqFeet === null
-                      ? "Unavailable"
-                      : formatSqFt(shape.areaSqFeet)}
-                  </span>
-                </button>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{group.name}</p>
+                      <p className="text-sm text-[var(--color-muted)]">
+                        {group.shapes.length} measurement{group.shapes.length === 1 ? "" : "s"}
+                      </p>
+                    </div>
+                    <div className="text-right text-sm">
+                      <p className="text-[var(--color-muted)]">Group Total</p>
+                      <p className="font-semibold">
+                        {group.totalSqFt === null ? "Unavailable" : formatSqFt(group.totalSqFt)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {group.shapes.map((shape) => (
+                      <button
+                        key={shape.id}
+                        type="button"
+                        onClick={() => selectShape(shape)}
+                        className={`flex w-full items-center justify-between rounded-2xl border px-4 py-3 text-left transition ${
+                          shape.id === selectedShapeId
+                            ? "border-[var(--color-accent)] bg-[rgba(155,93,51,0.08)]"
+                            : "border-[var(--color-border)] bg-white"
+                        }`}
+                      >
+                        <span className="flex items-center gap-3">
+                          <span
+                            className="h-3 w-3 rounded-full"
+                            style={{ backgroundColor: shape.colorHex }}
+                          />
+                          <span>
+                            <span className="block font-medium">{shape.name}</span>
+                            <span className="text-sm text-[var(--color-muted)]">
+                              {shape.operation === "deduct" ? "Deduct" : "Add"} • {shape.kind}
+                            </span>
+                          </span>
+                        </span>
+                        <span className="text-sm font-semibold text-[var(--color-foreground)]">
+                          {shape.areaSqFeet === null
+                            ? "Unavailable"
+                            : `${shape.operation === "deduct" ? "-" : ""}${formatSqFt(Math.abs(shape.areaSqFeet))}`}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))
             )}
           </div>

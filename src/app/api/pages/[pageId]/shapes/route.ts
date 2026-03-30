@@ -14,7 +14,7 @@ export async function POST(request: Request, { params }: RouteContext) {
 
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Invalid polygon payload." },
+      { error: "Invalid area payload." },
       { status: 400 },
     );
   }

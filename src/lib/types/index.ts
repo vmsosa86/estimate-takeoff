@@ -3,6 +3,10 @@ export type Point = {
   y: number;
 };
 
+export type ShapeKind = "polygon" | "rectangle";
+
+export type ShapeOperation = "add" | "deduct";
+
 export type Project = {
   id: string;
   name: string;
@@ -53,6 +57,10 @@ export type AreaShape = {
   id: string;
   pageId: string;
   name: string;
+  kind: ShapeKind;
+  operation: ShapeOperation;
+  colorHex: string;
+  groupName: string | null;
   points: Point[];
   pixelArea: number;
   areaSqInches: number | null;

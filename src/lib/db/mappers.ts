@@ -114,6 +114,10 @@ export function mapAreaShape(
     id: string;
     page_id: string;
     name: string;
+    kind: AreaShape["kind"];
+    operation: AreaShape["operation"];
+    color_hex: string;
+    group_name: string | null;
     points_jsonb: AreaShape["points"];
     pixel_area: number;
     area_sq_inches: number | null;
@@ -124,6 +128,10 @@ export function mapAreaShape(
     id: row.id,
     pageId: row.page_id,
     name: row.name,
+    kind: row.kind,
+    operation: row.operation,
+    colorHex: row.color_hex,
+    groupName: row.group_name,
     points: row.points_jsonb,
     pixelArea: row.pixel_area,
     areaSqInches: row.area_sq_inches,

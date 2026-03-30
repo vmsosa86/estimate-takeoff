@@ -18,6 +18,8 @@ import type {
   ProjectListItem,
   ViewerPageData,
   Point,
+  ShapeKind,
+  ShapeOperation,
 } from "@/lib/types";
 import { withTransaction } from "@/lib/db";
 import {
@@ -74,6 +76,10 @@ type ShapeRow = {
   id: string;
   page_id: string;
   name: string;
+  kind: ShapeKind;
+  operation: ShapeOperation;
+  color_hex: string;
+  group_name: string | null;
   points_jsonb: Point[];
   pixel_area: number;
   area_sq_inches: number | null;
@@ -455,6 +461,10 @@ export async function savePageCalibration(input: {
 export async function createAreaShape(input: {
   pageId: string;
   name: string;
+  kind: ShapeKind;
+  operation: ShapeOperation;
+  colorHex: string;
+  groupName?: string | null;
   points: Point[];
 }): Promise<AreaShape> {
   return withTransaction(async (client) => {
@@ -470,17 +480,25 @@ export async function createAreaShape(input: {
         INSERT INTO area_shapes (
           page_id,
           name,
+          kind,
+          operation,
+          color_hex,
+          group_name,
           points_jsonb,
           pixel_area,
           area_sq_inches,
           area_sq_feet
         )
-        VALUES ($1, $2, $3::jsonb, $4, $5, $6)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)
         RETURNING *
       `,
       [
         input.pageId,
         input.name,
+        input.kind,
+        input.operation,
+        input.colorHex,
+        input.groupName?.trim() || null,
         JSON.stringify(input.points),
         pixelArea,
         measured.areaSqInches,
@@ -495,6 +513,10 @@ export async function createAreaShape(input: {
 export async function updateAreaShape(input: {
   shapeId: string;
   name?: string;
+  kind?: ShapeKind;
+  operation?: ShapeOperation;
+  colorHex?: string;
+  groupName?: string | null;
   points?: Point[];
 }): Promise<AreaShape> {
   return withTransaction(async (client) => {
@@ -525,10 +547,14 @@ export async function updateAreaShape(input: {
       `
         UPDATE area_shapes
         SET name = $2,
-            points_jsonb = $3::jsonb,
-            pixel_area = $4,
-            area_sq_inches = $5,
-            area_sq_feet = $6,
+            kind = $3,
+            operation = $4,
+            color_hex = $5,
+            group_name = $6,
+            points_jsonb = $7::jsonb,
+            pixel_area = $8,
+            area_sq_inches = $9,
+            area_sq_feet = $10,
             updated_at = NOW()
         WHERE id = $1
         RETURNING *
@@ -536,6 +562,12 @@ export async function updateAreaShape(input: {
       [
         input.shapeId,
         input.name ?? existing.name,
+        input.kind ?? existing.kind,
+        input.operation ?? existing.operation,
+        input.colorHex ?? existing.color_hex,
+        input.groupName === undefined
+          ? existing.group_name
+          : input.groupName?.trim() || null,
         JSON.stringify(nextPoints),
         pixelArea,
         measured.areaSqInches,

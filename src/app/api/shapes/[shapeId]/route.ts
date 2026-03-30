@@ -12,7 +12,17 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   const payload = await request.json();
   const parsed = updateShapeSchema.safeParse(payload);
 
-  if (!parsed.success || (!parsed.data.name && !parsed.data.points)) {
+  if (
+    !parsed.success ||
+    (
+      parsed.data.name === undefined &&
+      parsed.data.points === undefined &&
+      parsed.data.kind === undefined &&
+      parsed.data.operation === undefined &&
+      parsed.data.colorHex === undefined &&
+      parsed.data.groupName === undefined
+    )
+  ) {
     return NextResponse.json(
       { error: "Invalid shape update payload." },
       { status: 400 },
