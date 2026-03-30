@@ -10,6 +10,10 @@ Estimate Takeoff is a self-hosted MVP for PDF area measurement on construction p
 - save calibrations and area results in PostgreSQL
 - deploy on an Ubuntu VPS with Docker Compose
 
+User guide:
+
+- [`docs/v1-user-manual.md`](/Users/victormsosa/Repos/Estimate%20TakeOff/docs/v1-user-manual.md)
+
 ## What It Uses
 
 - Next.js 16 App Router
