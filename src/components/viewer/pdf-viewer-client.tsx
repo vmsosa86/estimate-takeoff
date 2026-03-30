@@ -612,17 +612,17 @@ export function PdfViewerClient({
       <aside className="space-y-4">
         <section className="rounded-3xl border border-[var(--color-border)] bg-[var(--color-surface-strong)] p-5 shadow-sm">
           <div className="flex items-start justify-between gap-3">
-            <div>
+            <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold uppercase tracking-[0.2em] text-[var(--color-accent)]">
                 File Info
               </p>
-              <h2 className="mt-2 text-xl font-semibold">
+              <h2 className="mt-2 break-words text-xl font-semibold leading-tight">
                 {viewerData.file.originalName}
               </h2>
             </div>
             <Link
               href={pageHref}
-              className="rounded-full border border-[var(--color-border)] px-4 py-2 text-sm font-medium"
+              className="shrink-0 rounded-full border border-[var(--color-border)] px-4 py-2 text-sm font-medium"
             >
               Back
             </Link>

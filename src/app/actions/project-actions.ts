@@ -7,28 +7,9 @@ import {
   createProject,
   deleteProject,
   renameProject,
-  uploadProjectFile,
 } from "@/lib/projects/service";
+import { buildSearchMessage } from "@/lib/http/navigation";
 import { projectSchema } from "@/lib/validation";
-
-function buildSearchMessage(
-  path: string,
-  options: { error?: string; success?: string },
-): string {
-  const searchParams = new URLSearchParams();
-
-  if (options.error) {
-    searchParams.set("error", options.error);
-  }
-
-  if (options.success) {
-    searchParams.set("success", options.success);
-  }
-
-  const query = searchParams.toString();
-
-  return query ? `${path}?${query}` : path;
-}
 
 export async function createProjectAction(formData: FormData): Promise<void> {
   const parsed = projectSchema.safeParse({
@@ -94,47 +75,4 @@ export async function deleteProjectAction(formData: FormData): Promise<void> {
       success: "Project deleted.",
     }),
   );
-}
-
-export async function uploadProjectFileAction(formData: FormData): Promise<void> {
-  const projectId = String(formData.get("projectId") ?? "");
-  const file = formData.get("file");
-
-  if (!projectId || !(file instanceof File)) {
-    redirect(
-      buildSearchMessage(`/projects/${projectId}`, {
-        error: "Choose a PDF file to upload.",
-      }),
-    );
-  }
-
-  const isPdfType = file.type === "application/pdf";
-  const isPdfName = file.name.toLowerCase().endsWith(".pdf");
-
-  if (!isPdfType && !isPdfName) {
-    redirect(
-      buildSearchMessage(`/projects/${projectId}`, {
-        error: "Only PDF files are allowed.",
-      }),
-    );
-  }
-
-  try {
-    const buffer = Buffer.from(await file.arrayBuffer());
-
-    await uploadProjectFile(projectId, file.name, buffer);
-    revalidatePath("/projects");
-    revalidatePath(`/projects/${projectId}`);
-    redirect(
-      buildSearchMessage(`/projects/${projectId}`, {
-        success: "PDF uploaded.",
-      }),
-    );
-  } catch {
-    redirect(
-      buildSearchMessage(`/projects/${projectId}`, {
-        error: "The PDF could not be processed.",
-      }),
-    );
-  }
 }

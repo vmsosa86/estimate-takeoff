@@ -4,7 +4,6 @@ import { notFound } from "next/navigation";
 import {
   deleteProjectAction,
   renameProjectAction,
-  uploadProjectFileAction,
 } from "@/app/actions/project-actions";
 import { NoticeBanner } from "@/components/projects/notice-banner";
 import { ProjectShell } from "@/components/projects/project-shell";
@@ -71,8 +70,12 @@ export default async function ProjectDetailPage({
           </form>
 
           <div className="border-t border-[var(--color-border)] pt-6">
-            <form action={uploadProjectFileAction} className="space-y-4">
-              <input type="hidden" name="projectId" value={detail.project.id} />
+            <form
+              action={`/api/projects/${detail.project.id}/upload`}
+              method="post"
+              encType="multipart/form-data"
+              className="space-y-4"
+            >
               <div>
                 <p className="text-sm font-medium text-[var(--color-muted)]">
                   Upload PDF drawings

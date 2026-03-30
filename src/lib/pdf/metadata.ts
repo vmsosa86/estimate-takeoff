@@ -1,6 +1,19 @@
 import "server-only";
 
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import * as pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.mjs";
+
+type PdfJsWorkerGlobal = {
+  WorkerMessageHandler: object;
+};
+
+declare global {
+  var pdfjsWorker: PdfJsWorkerGlobal | undefined;
+}
+
+if (!globalThis.pdfjsWorker) {
+  globalThis.pdfjsWorker = pdfjsWorker as PdfJsWorkerGlobal;
+}
 
 export type PdfPageMetadata = {
   pageNumber: number;
