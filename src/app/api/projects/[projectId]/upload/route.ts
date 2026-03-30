@@ -10,17 +10,22 @@ type RouteContext = {
 };
 
 function getRequestOrigin(request: Request): string {
+  const configuredOrigin = new URL(getAppUrl());
   const forwardedHost = request.headers.get("x-forwarded-host");
   const host = forwardedHost ?? request.headers.get("host");
 
   if (host) {
+    if (host === configuredOrigin.host) {
+      return configuredOrigin.origin;
+    }
+
     const forwardedProto = request.headers.get("x-forwarded-proto");
     const protocol = forwardedProto ?? new URL(request.url).protocol.replace(":", "");
 
     return `${protocol}://${host}`;
   }
 
-  return getAppUrl();
+  return configuredOrigin.origin;
 }
 
 function redirectToProject(
