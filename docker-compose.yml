@@ -16,7 +16,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "${POSTGRES_BIND_HOST:-127.0.0.1}:5432:5432"
 
   app:
     build:
@@ -38,7 +38,7 @@ services:
     volumes:
       - ./uploads:/app/uploads
     ports:
-      - "3000:3000"
+      - "${APP_BIND_HOST:-127.0.0.1}:3000:3000"
 
 volumes:
   postgres_data:
