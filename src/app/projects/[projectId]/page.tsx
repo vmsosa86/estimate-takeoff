@@ -7,6 +7,7 @@ import {
 } from "@/app/actions/project-actions";
 import { NoticeBanner } from "@/components/projects/notice-banner";
 import { ProjectShell } from "@/components/projects/project-shell";
+import { UploadForm } from "@/components/projects/upload-form";
 import { getProjectDetail } from "@/lib/projects/service";
 
 export const dynamic = "force-dynamic";
@@ -70,31 +71,7 @@ export default async function ProjectDetailPage({
           </form>
 
           <div className="border-t border-[var(--color-border)] pt-6">
-            <form
-              action={`/api/projects/${detail.project.id}/upload`}
-              method="post"
-              encType="multipart/form-data"
-              className="space-y-4"
-            >
-              <div>
-                <p className="text-sm font-medium text-[var(--color-muted)]">
-                  Upload PDF drawings
-                </p>
-                <p className="mt-1 text-sm text-[var(--color-muted)]">
-                  PDF files only. Uploaded plans are stored on local disk.
-                </p>
-              </div>
-              <input
-                required
-                name="file"
-                type="file"
-                accept="application/pdf,.pdf"
-                className="block w-full rounded-2xl border border-dashed border-[var(--color-border)] bg-white px-4 py-4 text-sm text-[var(--color-muted)] file:mr-4 file:rounded-full file:border-0 file:bg-[var(--color-accent)] file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white"
-              />
-              <button className="inline-flex rounded-full border border-[var(--color-border)] bg-white px-5 py-3 text-sm font-semibold transition hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]">
-                Upload PDF
-              </button>
-            </form>
+            <UploadForm action={`/api/projects/${detail.project.id}/upload`} />
           </div>
 
           <div className="border-t border-[var(--color-border)] pt-6">

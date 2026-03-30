@@ -28,14 +28,25 @@ function getRequestOrigin(request: Request): string {
   return configuredOrigin.origin;
 }
 
-function redirectToProject(
+function respondToProject(
   request: Request,
   projectId: string,
   options: { error?: string; success?: string },
 ) {
   const pathname = buildSearchMessage(`/projects/${projectId}`, options);
+  const redirectTo = new URL(pathname, getRequestOrigin(request)).toString();
 
-  return NextResponse.redirect(new URL(pathname, getRequestOrigin(request)), 303);
+  if (request.headers.get("x-requested-with") === "XMLHttpRequest") {
+    return NextResponse.json(
+      {
+        error: options.error,
+        redirectTo,
+      },
+      { status: options.error ? 400 : 200 },
+    );
+  }
+
+  return NextResponse.redirect(redirectTo, 303);
 }
 
 export async function POST(request: Request, { params }: RouteContext) {
@@ -44,7 +55,7 @@ export async function POST(request: Request, { params }: RouteContext) {
   const file = formData.get("file");
 
   if (!(file instanceof File)) {
-    return redirectToProject(request, projectId, {
+    return respondToProject(request, projectId, {
       error: "Choose a PDF file to upload.",
     });
   }
@@ -53,7 +64,7 @@ export async function POST(request: Request, { params }: RouteContext) {
   const isPdfName = file.name.toLowerCase().endsWith(".pdf");
 
   if (!isPdfType && !isPdfName) {
-    return redirectToProject(request, projectId, {
+    return respondToProject(request, projectId, {
       error: "Only PDF files are allowed.",
     });
   }
@@ -65,7 +76,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}`);
 
-    return redirectToProject(request, projectId, {
+    return respondToProject(request, projectId, {
       success: "PDF uploaded.",
     });
   } catch (error) {
@@ -76,7 +87,7 @@ export async function POST(request: Request, { params }: RouteContext) {
       error,
     });
 
-    return redirectToProject(request, projectId, {
+    return respondToProject(request, projectId, {
       error: "The PDF could not be processed.",
     });
   }
