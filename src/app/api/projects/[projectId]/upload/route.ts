@@ -9,10 +9,28 @@ type RouteContext = {
   params: Promise<{ projectId: string }>;
 };
 
-function redirectToProject(projectId: string, options: { error?: string; success?: string }) {
+function getRequestOrigin(request: Request): string {
+  const forwardedHost = request.headers.get("x-forwarded-host");
+  const host = forwardedHost ?? request.headers.get("host");
+
+  if (host) {
+    const forwardedProto = request.headers.get("x-forwarded-proto");
+    const protocol = forwardedProto ?? new URL(request.url).protocol.replace(":", "");
+
+    return `${protocol}://${host}`;
+  }
+
+  return getAppUrl();
+}
+
+function redirectToProject(
+  request: Request,
+  projectId: string,
+  options: { error?: string; success?: string },
+) {
   const pathname = buildSearchMessage(`/projects/${projectId}`, options);
 
-  return NextResponse.redirect(new URL(pathname, getAppUrl()), 303);
+  return NextResponse.redirect(new URL(pathname, getRequestOrigin(request)), 303);
 }
 
 export async function POST(request: Request, { params }: RouteContext) {
@@ -21,7 +39,7 @@ export async function POST(request: Request, { params }: RouteContext) {
   const file = formData.get("file");
 
   if (!(file instanceof File)) {
-    return redirectToProject(projectId, {
+    return redirectToProject(request, projectId, {
       error: "Choose a PDF file to upload.",
     });
   }
@@ -30,7 +48,7 @@ export async function POST(request: Request, { params }: RouteContext) {
   const isPdfName = file.name.toLowerCase().endsWith(".pdf");
 
   if (!isPdfType && !isPdfName) {
-    return redirectToProject(projectId, {
+    return redirectToProject(request, projectId, {
       error: "Only PDF files are allowed.",
     });
   }
@@ -42,7 +60,7 @@ export async function POST(request: Request, { params }: RouteContext) {
     revalidatePath("/projects");
     revalidatePath(`/projects/${projectId}`);
 
-    return redirectToProject(projectId, {
+    return redirectToProject(request, projectId, {
       success: "PDF uploaded.",
     });
   } catch (error) {
@@ -53,7 +71,7 @@ export async function POST(request: Request, { params }: RouteContext) {
       error,
     });
 
-    return redirectToProject(projectId, {
+    return redirectToProject(request, projectId, {
       error: "The PDF could not be processed.",
     });
   }
