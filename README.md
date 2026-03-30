@@ -56,6 +56,8 @@ Variables:
 - `UPLOADS_DIR`: local directory where uploaded PDFs are stored
 - `NEXT_PUBLIC_APP_URL`: public URL for the app
 - `PORT`: app port
+- `APP_BIND_HOST`: host bind for the app container port mapping. Use `127.0.0.1` in production so the app is only reachable through a reverse proxy.
+- `POSTGRES_BIND_HOST`: host bind for the PostgreSQL container port mapping. Use `127.0.0.1` in production so PostgreSQL is not public.
 - `BASIC_AUTH_ENABLED`: set to `true` to require a shared username/password for the app
 - `BASIC_AUTH_USERNAME`: shared login username for the app-wide protection
 - `BASIC_AUTH_PASSWORD`: shared login password for the app-wide protection
@@ -138,6 +140,8 @@ mkdir -p uploads
 
 ```dotenv
 NEXT_PUBLIC_APP_URL=https://your-domain.com
+APP_BIND_HOST=127.0.0.1
+POSTGRES_BIND_HOST=127.0.0.1
 BASIC_AUTH_ENABLED=true
 BASIC_AUTH_USERNAME=your-username
 BASIC_AUTH_PASSWORD=use-a-strong-password
@@ -156,7 +160,29 @@ docker compose ps
 docker compose logs -f app
 ```
 
-The app will be available at `http://YOUR_SERVER_IP:3000`.
+The recommended production layout is:
+
+- Cloudflare -> reverse proxy -> app
+- `app` bound to `127.0.0.1:3000`
+- `postgres` bound to `127.0.0.1:5432`
+
+Do not leave the app exposed directly on `YOUR_SERVER_IP:3000` in production.
+
+## Current Production Topology
+
+The current VPS deployment uses:
+
+- Cloudflare proxied DNS for `getestimatetakeoff.com`
+- Caddy on `443` for TLS termination
+- Nginx on `80` as the internal reverse proxy to the app
+- Docker app bound to `127.0.0.1:3000`
+- PostgreSQL bound to `127.0.0.1:5432`
+
+That means the public request path is:
+
+- Cloudflare -> Caddy `:443` -> Nginx `:80` -> app `127.0.0.1:3000`
+
+This setup was chosen because another service on the same VPS already owned public `443`.
 
 ## Nginx Reverse Proxy
 
@@ -179,6 +205,21 @@ sudo systemctl reload nginx
 ```
 
 Update `server_name estimate.example.com;` to your real domain before enabling it.
+
+## Cloudflare Setup
+
+Recommended DNS records:
+
+```text
+A      @      YOUR_VPS_IP     Proxied
+CNAME  www    @               Proxied
+```
+
+Recommended SSL mode:
+
+- `Full`
+
+Use `Full (strict)` only after your origin proxy presents a publicly trusted certificate or a Cloudflare Origin Certificate.
 
 ## Let's Encrypt SSL
 
@@ -208,6 +249,8 @@ After SSL is in place, set:
 ```dotenv
 NEXT_PUBLIC_APP_URL=https://your-domain.com
 ```
+
+If your VPS already has another service bound to public `443`, do not assume Certbot-managed Nginx HTTPS can take over that port safely. In that case, terminate TLS in the existing proxy and forward traffic internally to Nginx or directly to the app.
 
 ## Docker Compose Usage
 
@@ -258,6 +301,7 @@ Uploaded PDFs are stored on local disk.
 - local development default: `./uploads`
 - Docker Compose mount: `./uploads:/app/uploads`
 - PostgreSQL data persists in the Docker volume `estimate-takeoff-postgres-data`
+- production-safe defaults bind the app to `127.0.0.1:3000` and PostgreSQL to `127.0.0.1:5432`
 
 Inside PostgreSQL, file metadata is saved in `project_files`, and individual page metadata is saved in `pdf_pages`.
 
@@ -327,6 +371,9 @@ tar -xzf backups/estimate_takeoff_uploads.tar.gz
 - Browser prompts for login unexpectedly
   Basic Auth is enabled. Use the credentials from your `.env` file, or set `BASIC_AUTH_ENABLED=false` and rebuild.
 
+- Large PDF upload returns `500`
+  Check the app logs and confirm `experimental.proxyClientMaxBodySize` is set in `next.config.ts`, then rebuild the app container.
+
 ## Verify Listen And Persistence
 
 Verify the app is listening on the VPS:
@@ -338,8 +385,18 @@ curl -I http://127.0.0.1:3000/projects
 
 Expected result:
 
-- `app` container should publish `0.0.0.0:3000->3000`
+- `app` container should publish `127.0.0.1:3000->3000`
 - `/projects` should respond with `200` or `401` if Basic Auth is enabled
+
+Verify PostgreSQL is not public:
+
+```bash
+ss -tulpn | grep 5432
+```
+
+Expected result:
+
+- PostgreSQL should publish `127.0.0.1:5432->5432`
 
 Verify PostgreSQL persistence:
 
@@ -358,12 +415,16 @@ docker compose exec app ls -la /app/uploads
 
 - DNS points your domain to the VPS public IP
 - `.env` exists on the VPS and includes the correct `NEXT_PUBLIC_APP_URL`
+- `APP_BIND_HOST=127.0.0.1`
+- `POSTGRES_BIND_HOST=127.0.0.1`
 - `BASIC_AUTH_ENABLED=true`
 - `BASIC_AUTH_USERNAME` and `BASIC_AUTH_PASSWORD` are set
 - `uploads/` exists on the host
 - `docker compose up -d --build` completes successfully
 - `docker compose ps` shows both `app` and `postgres` healthy/running
 - `curl -I http://127.0.0.1:3000/projects` returns `200` or `401`
+- direct public access to `YOUR_SERVER_IP:3000` fails
+- direct public access to `YOUR_SERVER_IP:5432` fails
 - Nginx config is installed and `sudo nginx -t` passes
 - Certbot certificate is issued and HTTPS loads
 - One test PDF uploads successfully
