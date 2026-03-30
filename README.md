@@ -13,6 +13,7 @@ Estimate Takeoff is a self-hosted MVP for PDF area measurement on construction p
 User guide:
 
 - [`docs/v1-user-manual.md`](/Users/victormsosa/Repos/Estimate%20TakeOff/docs/v1-user-manual.md)
+- [`docs/server-security-summary.md`](/Users/victormsosa/Repos/Estimate%20TakeOff/docs/server-security-summary.md)
 
 ## What It Uses
 
@@ -187,6 +188,18 @@ That means the public request path is:
 - Cloudflare -> Caddy `:443` -> Nginx `:80` -> app `127.0.0.1:3000`
 
 This setup was chosen because another service on the same VPS already owned public `443`.
+
+## Current Production Security
+
+A short operational security summary is included at [`docs/server-security-summary.md`](/Users/victormsosa/Repos/Estimate%20TakeOff/docs/server-security-summary.md).
+
+In the current deployment:
+
+- website traffic on `80/443` is intended to be Cloudflare-only
+- the Telegram webhook remains public on `8443`
+- the app stays on `127.0.0.1:3000`
+- PostgreSQL stays on `127.0.0.1:5432`
+- Tailscale is the preferred admin path
 
 ## Nginx Reverse Proxy
 
